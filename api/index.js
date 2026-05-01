@@ -2,12 +2,32 @@ const path = require('path');
 
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
-const { app, env } = require('../src/app');
 const { connectDatabase } = require('../src/config/db');
 
 let dbInitializationPromise;
+let cachedApp;
+let cachedEnv;
+
+function getApp() {
+  if (!cachedApp) {
+    ({ app: cachedApp } = require('../src/app'));
+  }
+
+  return cachedApp;
+}
+
+function getValidatedEnv() {
+  if (!cachedEnv) {
+    const { getEnv } = require('../src/config/env');
+    cachedEnv = getEnv();
+  }
+
+  return cachedEnv;
+}
 
 async function ensureDatabaseConnected() {
+  const env = getValidatedEnv();
+
   if (!dbInitializationPromise) {
     dbInitializationPromise = connectDatabase(env).catch((error) => {
       dbInitializationPromise = undefined;
@@ -20,6 +40,7 @@ async function ensureDatabaseConnected() {
 
 module.exports = async (req, res) => {
   try {
+    const app = getApp();
     await ensureDatabaseConnected();
     return app(req, res);
   } catch (error) {

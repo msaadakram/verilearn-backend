@@ -14,11 +14,17 @@ const messageRoutes = require('./routes/message.routes');
 const callRoutes = require('./routes/call.routes');
 const bookingRoutes = require('./routes/booking.routes');
 const agoraRoutes = require('./routes/agora.routes');
-const { getEnv } = require('./config/env');
 const { getDatabaseStatus } = require('./config/db');
 
-const env = getEnv();
-const configuredOrigins = env.CLIENT_ORIGIN.split(',').map((origin) => origin.trim()).filter(Boolean);
+const runtimeSettings = {
+  NODE_ENV: process.env.NODE_ENV || 'development',
+  CLIENT_ORIGIN: process.env.CLIENT_ORIGIN || 'http://localhost:3000',
+};
+
+const configuredOrigins = runtimeSettings.CLIENT_ORIGIN
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 function buildAllowedOrigins(origins, nodeEnv) {
   const merged = new Set(origins);
@@ -33,7 +39,7 @@ function buildAllowedOrigins(origins, nodeEnv) {
   return Array.from(merged);
 }
 
-const allowedOrigins = buildAllowedOrigins(configuredOrigins, env.NODE_ENV);
+const allowedOrigins = buildAllowedOrigins(configuredOrigins, runtimeSettings.NODE_ENV);
 
 function isLoopbackHostname(hostname) {
   return hostname === 'localhost'
@@ -51,7 +57,7 @@ function isAllowedOrigin(origin) {
     return true;
   }
 
-  if (env.NODE_ENV !== 'production') {
+  if (runtimeSettings.NODE_ENV !== 'production') {
     try {
       const parsed = new URL(origin);
       return parsed.protocol === 'http:' && isLoopbackHostname(parsed.hostname);
@@ -145,6 +151,5 @@ app.use((err, _req, res, _next) => {
 
 module.exports = {
   app,
-  env,
   corsOriginResolver,
 };

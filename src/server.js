@@ -3,10 +3,13 @@ const { createServer } = require('http');
 const { Server: SocketIOServer } = require('socket.io');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
+const { getEnv } = require('./config/env');
 const { connectDatabase, disconnectDatabase } = require('./config/db');
 const socketAuthMiddleware = require('./middleware/socketAuth');
 const setupSocketHandlers = require('./socketHandlers');
-const { app, env, corsOriginResolver } = require('./app');
+const { app, corsOriginResolver } = require('./app');
+
+const env = getEnv();
 
 let httpServer;
 let io;
