@@ -16,9 +16,18 @@ const bookingRoutes = require('./routes/booking.routes');
 const agoraRoutes = require('./routes/agora.routes');
 const { getDatabaseStatus } = require('./config/db');
 
+const DEPLOYED_FRONTEND_ORIGINS = [
+  'https://verilearn-frontend.vercel.app',
+];
+
+const DEFAULT_CLIENT_ORIGIN = [
+  'http://localhost:3000',
+  ...DEPLOYED_FRONTEND_ORIGINS,
+].join(',');
+
 const runtimeSettings = {
   NODE_ENV: process.env.NODE_ENV || 'development',
-  CLIENT_ORIGIN: process.env.CLIENT_ORIGIN || 'http://localhost:3000,https://verilearn-frontend.vercel.app',
+  CLIENT_ORIGIN: process.env.CLIENT_ORIGIN || DEFAULT_CLIENT_ORIGIN,
 };
 
 const configuredOrigins = runtimeSettings.CLIENT_ORIGIN
@@ -28,6 +37,7 @@ const configuredOrigins = runtimeSettings.CLIENT_ORIGIN
 
 function buildAllowedOrigins(origins, nodeEnv) {
   const merged = new Set(origins);
+  DEPLOYED_FRONTEND_ORIGINS.forEach((origin) => merged.add(origin));
 
   if (nodeEnv !== 'production') {
     [3000, 3001, 5173, 4173].forEach((port) => {

@@ -1,4 +1,5 @@
 const REQUIRED_ENV_VARS = ['MONGODB_URI', 'JWT_SECRET'];
+const DEFAULT_CLIENT_ORIGIN = 'http://localhost:3000,https://verilearn-frontend.vercel.app';
 
 function getEnv() {
   const missing = REQUIRED_ENV_VARS.filter((key) => !process.env[key] || !process.env[key].trim());
@@ -10,7 +11,7 @@ function getEnv() {
   return {
     NODE_ENV: process.env.NODE_ENV || 'development',
     PORT: Number(process.env.PORT) || 5000,
-    CLIENT_ORIGIN: process.env.CLIENT_ORIGIN || 'http://localhost:3000,https://verilearn-frontend.vercel.app',
+    CLIENT_ORIGIN: process.env.CLIENT_ORIGIN || DEFAULT_CLIENT_ORIGIN,
     MONGODB_URI: process.env.MONGODB_URI.trim(),
     MONGODB_DB_NAME: process.env.MONGODB_DB_NAME || 'verilearn',
     JWT_SECRET: process.env.JWT_SECRET.trim(),
