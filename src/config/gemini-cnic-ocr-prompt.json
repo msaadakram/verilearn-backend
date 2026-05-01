@@ -1,0 +1,80 @@
+{
+  "name": "cnic_gemini_request_blueprint",
+  "version": "1.0.0",
+  "goal": "Send CNIC image uploaded by user from frontend to Gemini and receive strict JSON-only OCR result.",
+  "frontend_to_backend_contract": {
+    "endpoint": "/api/auth/cnic/verify-gemini",
+    "method": "POST",
+    "auth": "Bearer JWT",
+    "contentType": "multipart/form-data",
+    "formData": {
+      "image": "<required File object from frontend user upload>",
+      "cnicNumber": "<optional typed CNIC from user, format XXXXX-XXXXXXX-X>"
+    },
+    "validation_rules": {
+      "accepted_image_mime_types": [
+        "image/jpeg",
+        "image/png",
+        "image/webp"
+      ],
+      "max_file_size_mb": 5,
+      "cnic_digits_required": 13
+    }
+  },
+  "backend_to_gemini_request": {
+    "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+    "method": "POST",
+    "query": {
+      "key": "${GEMINI_API_KEY}"
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "generationConfig": {
+        "temperature": 0,
+        "topP": 0.1,
+        "maxOutputTokens": 1024,
+        "responseMimeType": "application/json"
+      },
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "You are an OCR extractor for Pakistani CNIC cards. Inspect only the front image. First decide whether a CNIC is visible in the image. Return ONLY valid JSON. Do not include markdown, comments, code fences, or extra text. If no CNIC is visible, return {\"cnic_available\": false, \"cnic\": null, \"dob\": null, \"name\": null, \"father_or_husband_name\": null, \"gender\": null, \"nationality\": null, \"issue_date\": null, \"expiry_date\": null, \"address\": null, \"confidence\": 0, \"raw_text\": \"\", \"ocr_backend\": \"gemini\", \"warnings\": [\"no_cnic_detected\"] }. If a CNIC is visible, return {\"cnic_available\": true, \"cnic\": string|null, \"dob\": string|null, \"name\": string|null, \"father_or_husband_name\": string|null, \"gender\": string|null, \"nationality\": string|null, \"issue_date\": string|null, \"expiry_date\": string|null, \"address\": string|null, \"confidence\": number, \"raw_text\": string, \"ocr_backend\": \"gemini\", \"warnings\": string[] }. Normalize CNIC as XXXXX-XXXXXXX-X. Normalize DOB and date fields as DD-MM-YYYY when possible. Keep the field names and JSON structure exactly the same every time. Confidence must be between 0 and 1."
+            },
+            {
+              "inline_data": {
+                "mime_type": "image/jpeg",
+                "data": "<BASE64_IMAGE_DATA_WITHOUT_DATA_URL_PREFIX>"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expected_normalized_response_json": {
+    "cnic_available": true,
+    "cnic": "42101-1234567-9",
+    "dob": "01-01-1998",
+    "name": "MUHAMMAD ALI",
+    "father_or_husband_name": "AHMAD ALI",
+    "gender": "M",
+    "nationality": "PAKISTANI",
+    "issue_date": "10-03-2021",
+    "expiry_date": "10-03-2031",
+    "address": null,
+    "confidence": 0.94,
+    "raw_text": "<full OCR text extracted from card>",
+    "ocr_backend": "gemini",
+    "warnings": []
+  },
+  "error_response_json": {
+    "message": "CNIC verification failed.",
+    "error_code": "GEMINI_OCR_ERROR",
+    "details": "<upstream error or validation reason>",
+    "retryable": true
+  }
+}
