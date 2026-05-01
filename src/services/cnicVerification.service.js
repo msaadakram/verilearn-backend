@@ -1,5 +1,4 @@
 const axios = require('axios');
-const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
 
@@ -91,16 +90,9 @@ function normalizeConfidence(value) {
 
 function getVerificationConfig() {
   return {
-    serviceUrl: process.env.CNIC_OCR_SERVICE_URL || 'http://127.0.0.1:8001/ocr',
-    timeoutMs: Number(process.env.CNIC_OCR_TIMEOUT_MS) || 15000,
     geminiApiKey: process.env.GEMINI_API_KEY || '',
     geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
     geminiTimeoutMs: Number(process.env.GEMINI_TIMEOUT_MS) || 30000,
-    fallbackToOcr: parseBoolean(process.env.CNIC_FALLBACK_TO_OCR, true),
-    stopOcrModelOnGeminiSuccess: parseBoolean(
-      process.env.CNIC_STOP_OCR_MODEL_ON_GEMINI_SUCCESS,
-      true,
-    ),
   };
 }
 
@@ -355,32 +347,6 @@ function normalizeGeminiResult(geminiJson, textResponse) {
   };
 }
 
-function getOcrStopUrl(serviceUrl) {
-  const trimmed = serviceUrl.trim();
-
-  if (trimmed.endsWith('/ocr')) {
-    return `${trimmed.slice(0, -4)}/pipeline/stop`;
-  }
-
-  return `${trimmed.replace(/\/$/, '')}/pipeline/stop`;
-}
-
-async function stopOcrModel(serviceUrl) {
-  const stopUrl = getOcrStopUrl(serviceUrl);
-  const response = await axios.post(stopUrl, null, {
-    timeout: 5000,
-    validateStatus: () => true,
-  });
-
-  if (response.status >= 200 && response.status < 300) {
-    return;
-  }
-
-  const error = new Error(response?.data?.message || `Failed to stop OCR model at ${stopUrl}.`);
-  error.statusCode = 503;
-  throw error;
-}
-
 async function verifyCnicWithGemini(file) {
   const {
     geminiApiKey,
@@ -427,81 +393,6 @@ async function verifyCnicWithGemini(file) {
   }
 }
 
-async function verifyCnicWithOcr(file) {
-  const { serviceUrl, timeoutMs } = getVerificationConfig();
-
-  const formData = new FormData();
-  formData.append('image', file.buffer, {
-    filename: file.originalname || 'cnic-upload.jpg',
-    contentType: file.mimetype || 'image/jpeg',
-    knownLength: file.size,
-  });
-
-  try {
-    const response = await axios.post(serviceUrl, formData, {
-      headers: formData.getHeaders(),
-      timeout: timeoutMs,
-      maxBodyLength: Infinity,
-      maxContentLength: Infinity,
-      validateStatus: () => true,
-    });
-
-    if (response.status >= 200 && response.status < 300) {
-      return response.data;
-    }
-
-    throw buildOcrUpstreamError(response.status, response.data);
-  } catch (error) {
-    if (error.statusCode) {
-      throw error;
-    }
-
-    if (error.response) {
-      throw buildOcrUpstreamError(error.response.status, error.response.data);
-    }
-
-    throw buildOcrTransportError(error, timeoutMs);
-  }
-}
-
-async function verifyCnicWithGeminiPreferred(file) {
-  const {
-    fallbackToOcr,
-    serviceUrl,
-    stopOcrModelOnGeminiSuccess,
-  } = getVerificationConfig();
-
-  try {
-    const geminiResult = await verifyCnicWithGemini(file);
-
-    if (stopOcrModelOnGeminiSuccess) {
-      try {
-        await stopOcrModel(serviceUrl);
-      } catch (error) {
-        console.warn(`[CNIC] Gemini succeeded but OCR model stop call failed: ${error.message}`);
-      }
-    }
-
-    return geminiResult;
-  } catch (geminiError) {
-    if (!fallbackToOcr) {
-      throw geminiError;
-    }
-
-    console.warn(`[CNIC] Gemini failed (${geminiError.message}). Falling back to OCR service.`);
-    const ocrResult = await verifyCnicWithOcr(file);
-
-    return {
-      ...ocrResult,
-      ocr_backend: ocrResult.ocr_backend || 'ocr',
-      gemini_json: null,
-    };
-  }
-}
-
 module.exports = {
   verifyCnicWithGemini,
-  verifyCnicWithGeminiPreferred,
-  verifyCnicWithOcr,
-  stopOcrModel,
 };

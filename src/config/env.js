@@ -11,8 +11,6 @@ function getEnv() {
     NODE_ENV: process.env.NODE_ENV || 'development',
     PORT: Number(process.env.PORT) || 5000,
     CLIENT_ORIGIN: process.env.CLIENT_ORIGIN || 'http://localhost:3000',
-    CNIC_OCR_SERVICE_URL: process.env.CNIC_OCR_SERVICE_URL || 'http://127.0.0.1:8001/ocr',
-    CNIC_OCR_TIMEOUT_MS: Number(process.env.CNIC_OCR_TIMEOUT_MS) || 90000,
     MONGODB_URI: process.env.MONGODB_URI.trim(),
     MONGODB_DB_NAME: process.env.MONGODB_DB_NAME || 'verilearn',
     JWT_SECRET: process.env.JWT_SECRET.trim(),
@@ -25,9 +23,6 @@ function getEnv() {
     GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
     GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
     GEMINI_TIMEOUT_MS: Number(process.env.GEMINI_TIMEOUT_MS) || 30000,
-    CNIC_FALLBACK_TO_OCR: (process.env.CNIC_FALLBACK_TO_OCR || 'true').toLowerCase() !== 'false',
-    CNIC_STOP_OCR_MODEL_ON_GEMINI_SUCCESS:
-      (process.env.CNIC_STOP_OCR_MODEL_ON_GEMINI_SUCCESS || 'true').toLowerCase() !== 'false',
     SUPABASE_URL: process.env.SUPABASE_URL || '',
     SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY || '',
     SUPABASE_STORAGE_BUCKET: process.env.SUPABASE_STORAGE_BUCKET || 'profile-images',
