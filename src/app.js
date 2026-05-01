@@ -18,7 +18,7 @@ const { getDatabaseStatus } = require('./config/db');
 
 const runtimeSettings = {
   NODE_ENV: process.env.NODE_ENV || 'development',
-  CLIENT_ORIGIN: process.env.CLIENT_ORIGIN || 'http://localhost:3000',
+  CLIENT_ORIGIN: process.env.CLIENT_ORIGIN || 'http://localhost:3000,https://verilearn-frontend.vercel.app',
 };
 
 const configuredOrigins = runtimeSettings.CLIENT_ORIGIN
