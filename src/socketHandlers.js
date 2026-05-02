@@ -5,9 +5,33 @@ const { normalizeActiveMode, assertConversationAccess } = require('./services/me
 const { hasRole } = require('./utils/roles');
 const { calculateSessionCredits } = require('./utils/sessionCredits');
 
-// Track online users and their socket IDs
-const onlineUsers = new Map(); // userId -> { socketId, status, lastSeen }
+// Track online users and their socket IDs by userId and activeMode
+// Key format: "userId:activeMode" to handle multiple connections per user in different modes
+const onlineUsers = new Map(); // "userId:activeMode" -> { userId, activeMode, socketId, status, lastSeen }
 const typingUsers = new Map(); // conversationId -> Set of userIds
+
+/**
+ * Create a map key for tracking user sockets by userId and activeMode
+ */
+function getUserModeKey(userId, activeMode) {
+  return `${userId}:${activeMode}`;
+}
+
+/**
+ * Get all active socket connections for a specific user, optionally filtered by mode
+ * Returns array of { userId, activeMode, socketId, status, lastSeen }
+ */
+function getUserSockets(userId, filterMode = null) {
+  const sockets = [];
+  for (const [key, data] of onlineUsers.entries()) {
+    if (data.userId.toString() === userId.toString()) {
+      if (filterMode === null || data.activeMode === filterMode) {
+        sockets.push(data);
+      }
+    }
+  }
+  return sockets;
+}
 
 /**
  * Create a room name for a user in a specific mode.
@@ -40,13 +64,16 @@ function canActAsTeacher(socket) {
  */
 function setupSocketHandlers(io) {
   io.on('connection', async (socket) => {
-    console.log(`[Socket] User ${socket.userId} connected: ${socket.id}`);
+    console.log(`[Socket] User ${socket.userId} (${socket.activeMode}) connected: ${socket.id}`);
 
     const userId = socket.userId;
     const activeMode = normalizeActiveMode(socket.activeMode, socket.profession);
+    const userModeKey = getUserModeKey(userId, activeMode);
 
-    // Track online user
-    onlineUsers.set(userId, {
+    // Track online user with mode-specific key to support multiple connections
+    onlineUsers.set(userModeKey, {
+      userId,
+      activeMode,
       socketId: socket.id,
       status: 'online',
       lastSeen: new Date(),
@@ -62,7 +89,7 @@ function setupSocketHandlers(io) {
     ).catch(console.error);
 
     // Broadcast user online status to all connected clients
-    io.emit('user-online', { userId, status: 'online', timestamp: new Date() });
+    io.emit('user-online', { userId, status: 'online', activeMode, timestamp: new Date() });
 
     socket.join(getUserRoom(userId, activeMode));
 
@@ -261,8 +288,9 @@ function setupSocketHandlers(io) {
      * Event: heartbeat
      */
     socket.on('heartbeat', () => {
-      if (onlineUsers.has(userId)) {
-        const user = onlineUsers.get(userId);
+      const userModeKey = getUserModeKey(userId, activeMode);
+      if (onlineUsers.has(userModeKey)) {
+        const user = onlineUsers.get(userModeKey);
         user.lastSeen = new Date();
 
         User.updateOne(
@@ -277,8 +305,9 @@ function setupSocketHandlers(io) {
      * Event: set-idle
      */
     socket.on('set-idle', () => {
-      if (onlineUsers.has(userId)) {
-        onlineUsers.get(userId).status = 'idle';
+      const userModeKey = getUserModeKey(userId, activeMode);
+      if (onlineUsers.has(userModeKey)) {
+        onlineUsers.get(userModeKey).status = 'idle';
       }
 
       User.updateOne({ _id: userId }, { onlineStatus: 'idle' }).catch(console.error);
@@ -315,27 +344,32 @@ function setupSocketHandlers(io) {
       // Derive the canonical channel name from the two participant IDs
       const channel = `call_${studentId}_${teacherId}`;
 
-      // Find teacher socket
-      const teacherSocketData = onlineUsers.get(teacherId);
-      if (!teacherSocketData) {
-        // Teacher is offline — notify student immediately
+      // Find teacher socket(s) - specifically look for teacher-mode connections
+      // A teacher can be connected in multiple modes, so we search for teacher mode specifically
+      const teacherSockets = getUserSockets(teacherId, 'teacher');
+
+      if (teacherSockets.length === 0) {
+        // Teacher not in teacher mode or offline — notify student immediately
+        console.log(`[Call] Student ${userId} called teacher ${teacherId}, but teacher has no active teacher-mode connection.`);
         socket.emit('call-rejected', {
-          reason: 'Teacher is currently offline.',
+          reason: 'Teacher is currently offline or not available.',
           channel,
         });
         return;
       }
 
-      console.log(`[Call] Student ${userId} calling teacher ${teacherId} on channel ${channel}`);
+      console.log(`[Call] Student ${userId} calling teacher ${teacherId} on channel ${channel} (found ${teacherSockets.length} teacher socket(s))`);
 
-      // Relay the incoming-call event to the teacher's socket
-      io.to(teacherSocketData.socketId).emit('incoming-call', {
-        channel,
-        studentId,
-        teacherId,
-        callerName: callerName || 'Student',
-        callerAvatar: callerAvatar || '',
-        callerSocketId: socket.id,
+      // Send to all teacher-mode sockets (usually just one, but handle multiple for robustness)
+      teacherSockets.forEach((teacherSocketData) => {
+        io.to(teacherSocketData.socketId).emit('incoming-call', {
+          channel,
+          studentId,
+          teacherId,
+          callerName: callerName || 'Student',
+          callerAvatar: callerAvatar || '',
+          callerSocketId: socket.id,
+        });
       });
     });
 
@@ -361,14 +395,18 @@ function setupSocketHandlers(io) {
 
       console.log(`[Call] Teacher ${userId} accepted call from student ${studentId} on ${channel}`);
 
-      // Notify the student that the call was accepted
-      const studentSocketData = onlineUsers.get(studentId);
-      if (studentSocketData) {
-        io.to(studentSocketData.socketId).emit('call-accepted', {
-          channel,
-          teacherId: teacherId || userId,
-          acceptedAt: new Date().toISOString(),
+      // Notify the student that the call was accepted - find student socket in student mode
+      const studentSockets = getUserSockets(studentId, 'student');
+      if (studentSockets.length > 0) {
+        studentSockets.forEach((studentSocketData) => {
+          io.to(studentSocketData.socketId).emit('call-accepted', {
+            channel,
+            teacherId: teacherId || userId,
+            acceptedAt: new Date().toISOString(),
+          });
         });
+      } else {
+        console.warn(`[Call] Could not find student ${studentId} to notify of accepted call`);
       }
     });
 
@@ -385,15 +423,21 @@ function setupSocketHandlers(io) {
         return;
       }
 
+
       console.log(`[Call] Teacher ${userId} rejected call from student ${studentId}`);
 
-      const studentSocketData = onlineUsers.get(studentId);
-      if (studentSocketData) {
-        io.to(studentSocketData.socketId).emit('call-rejected', {
-          channel,
-          reason: reason || 'The teacher declined your call.',
-          rejectedAt: new Date().toISOString(),
+      // Notify student - find student socket in student mode
+      const studentSockets = getUserSockets(studentId, 'student');
+      if (studentSockets.length > 0) {
+        studentSockets.forEach((studentSocketData) => {
+          io.to(studentSocketData.socketId).emit('call-rejected', {
+            channel,
+            reason: reason || 'The teacher declined your call.',
+            rejectedAt: new Date().toISOString(),
+          });
         });
+      } else {
+        console.warn(`[Call] Could not find student ${studentId} to notify of rejected call`);
       }
     });
 
@@ -408,12 +452,15 @@ function setupSocketHandlers(io) {
       console.log(`[Call] User ${userId} ended call on channel ${channel}`);
 
       if (otherUserId) {
-        const otherSocketData = onlineUsers.get(otherUserId);
-        if (otherSocketData) {
-          io.to(otherSocketData.socketId).emit('call-ended', {
-            channel,
-            endedBy: userId,
-            endedAt: new Date().toISOString(),
+        // Find all active connections for the other user and notify them
+        const otherUserSockets = getUserSockets(otherUserId);
+        if (otherUserSockets.length > 0) {
+          otherUserSockets.forEach((otherSocketData) => {
+            io.to(otherSocketData.socketId).emit('call-ended', {
+              channel,
+              endedBy: userId,
+              endedAt: new Date().toISOString(),
+          });
           });
         }
       }
@@ -464,12 +511,15 @@ function setupSocketHandlers(io) {
 
         // Notify the other participant that this user joined
         const otherParticipantId = isStudent ? String(booking.teacherId) : String(booking.studentId);
-        const otherSocket = onlineUsers.get(otherParticipantId);
-        if (otherSocket) {
-          io.to(otherSocket.socketId).emit('session-user-joined', {
+        // Find the other participant's sockets
+        const otherParticipantSockets = getUserSockets(otherParticipantId);
+        if (otherParticipantSockets.length > 0) {
+          otherParticipantSockets.forEach((otherSocket) => {
+            io.to(otherSocket.socketId).emit('session-user-joined', {
             bookingId,
             userId,
             role: isStudent ? 'student' : 'teacher',
+          });
           });
         }
 
@@ -487,8 +537,10 @@ function setupSocketHandlers(io) {
 
           // Emit to both participants
           socket.emit('session-started', startPayload);
-          if (otherSocket) {
-            io.to(otherSocket.socketId).emit('session-started', startPayload);
+          if (otherParticipantSockets.length > 0) {
+            otherParticipantSockets.forEach((otherSocket) => {
+              io.to(otherSocket.socketId).emit('session-started', startPayload);
+            });
           }
 
           console.log(`[Session] Session ${bookingId} started — both participants joined.`);
@@ -613,9 +665,11 @@ function setupSocketHandlers(io) {
         // Emit to both participants
         socket.emit('session-completed', completedPayload);
         const otherParticipantId = isStudent ? String(booking.teacherId) : String(booking.studentId);
-        const otherSocket = onlineUsers.get(otherParticipantId);
-        if (otherSocket) {
-          io.to(otherSocket.socketId).emit('session-completed', completedPayload);
+        const otherParticipantSockets = getUserSockets(otherParticipantId);
+        if (otherParticipantSockets.length > 0) {
+          otherParticipantSockets.forEach((otherSocket) => {
+            io.to(otherSocket.socketId).emit('session-completed', completedPayload);
+          });
         }
 
         console.log(`[Session] Session ${bookingId} completed. ${creditsUsed} credits transferred.`);
@@ -632,7 +686,9 @@ function setupSocketHandlers(io) {
     socket.on('disconnect', () => {
       console.log(`[Socket] User ${userId} disconnected: ${socket.id}`);
 
-      onlineUsers.delete(userId);
+  const userModeKey = getUserModeKey(userId, activeMode);
+  onlineUsers.delete(userModeKey);
+  console.log(`[Socket] Removed ${userId} (${activeMode}) from online users. Remaining: ${onlineUsers.size}`);
 
       User.updateOne(
         { _id: userId },
@@ -651,8 +707,7 @@ function setupSocketHandlers(io) {
  * Get list of online users
  */
 function getOnlineUsers() {
-  return Array.from(onlineUsers.entries()).map(([userId, data]) => ({
-    userId,
+  return Array.from(onlineUsers.entries()).map(([key, data]) => ({
     ...data,
   }));
 }
