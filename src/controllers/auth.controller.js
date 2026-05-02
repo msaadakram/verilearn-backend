@@ -683,7 +683,9 @@ async function getQualifiedTeachersForStudent(_req, res) {
     'teacherProfile.profileCompleted': true,
     'teacherProfile.assessment.passed': true,
   })
-    .select('name teacherProfile')
+    // Include root-level avatarUrl so updates made via student profile (root avatar)
+    // are visible in teacher listings without requiring teacherProfile.avatarUrl to be present.
+    .select('name teacherProfile avatarUrl')
     .sort({ updatedAt: -1 });
 
   const teachersWithStatus = await Promise.all(
@@ -711,6 +713,15 @@ async function getQualifiedTeacherDetailForStudent(req, res) {
   const teacher = await User.findOne({
     _id: req.params.teacherId,
   }).select('name teacherProfile');
+
+  // Ensure root avatar is loaded as well so the public teacher detail uses the latest avatar
+  // (uploads from student profile update root avatarUrl).
+  if (teacher && typeof teacher.avatarUrl === 'undefined') {
+    const reloaded = await User.findOne({ _id: req.params.teacherId }).select('avatarUrl');
+    if (reloaded?.avatarUrl) {
+      teacher.avatarUrl = reloaded.avatarUrl;
+    }
+  }
 
   if (!teacher) {
     return res.status(404).json({ message: 'Teacher not found.' });
