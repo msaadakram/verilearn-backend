@@ -344,13 +344,16 @@ function setupSocketHandlers(io) {
       // Derive the canonical channel name from the two participant IDs
       const channel = `call_${studentId}_${teacherId}`;
 
-      // Find teacher socket(s) - specifically look for teacher-mode connections
-      // A teacher can be connected in multiple modes, so we search for teacher mode specifically
-      const teacherSockets = getUserSockets(teacherId, 'teacher');
+      // Find teacher socket(s) - first try teacher-mode, then any mode for dual-role users
+      let teacherSockets = getUserSockets(teacherId, 'teacher');
+      if (teacherSockets.length === 0) {
+        // Teacher might be connected in student mode (dual-role user) — search all modes
+        teacherSockets = getUserSockets(teacherId);
+      }
 
       if (teacherSockets.length === 0) {
-        // Teacher not in teacher mode or offline — notify student immediately
-        console.log(`[Call] Student ${userId} called teacher ${teacherId}, but teacher has no active teacher-mode connection.`);
+        // Teacher truly offline — notify student immediately
+        console.log(`[Call] Student ${userId} called teacher ${teacherId}, but teacher has no active connection.`);
         socket.emit('call-rejected', {
           reason: 'Teacher is currently offline or not available.',
           channel,
@@ -460,7 +463,7 @@ function setupSocketHandlers(io) {
               channel,
               endedBy: userId,
               endedAt: new Date().toISOString(),
-          });
+            });
           });
         }
       }
@@ -516,10 +519,10 @@ function setupSocketHandlers(io) {
         if (otherParticipantSockets.length > 0) {
           otherParticipantSockets.forEach((otherSocket) => {
             io.to(otherSocket.socketId).emit('session-user-joined', {
-            bookingId,
-            userId,
-            role: isStudent ? 'student' : 'teacher',
-          });
+              bookingId,
+              userId,
+              role: isStudent ? 'student' : 'teacher',
+            });
           });
         }
 
@@ -686,9 +689,9 @@ function setupSocketHandlers(io) {
     socket.on('disconnect', () => {
       console.log(`[Socket] User ${userId} disconnected: ${socket.id}`);
 
-  const userModeKey = getUserModeKey(userId, activeMode);
-  onlineUsers.delete(userModeKey);
-  console.log(`[Socket] Removed ${userId} (${activeMode}) from online users. Remaining: ${onlineUsers.size}`);
+      const userModeKey = getUserModeKey(userId, activeMode);
+      onlineUsers.delete(userModeKey);
+      console.log(`[Socket] Removed ${userId} (${activeMode}) from online users. Remaining: ${onlineUsers.size}`);
 
       User.updateOne(
         { _id: userId },
