@@ -327,6 +327,18 @@ function serializeUser(user) {
   const avatarUrl = resolveRoleAvatarUrl(user, user.profession);
   const roles = getUserRoles(user);
   const successfulSessions = getTeacherSuccessfulSessionCount(user);
+  const appendCacheBuster = (rawUrl) => {
+    if (!rawUrl) return '';
+    try {
+      const sep = rawUrl.includes('?') ? '&' : '?';
+      const t = user?.updatedAt?.getTime ? user.updatedAt.getTime() : Date.now();
+      return `${rawUrl}${sep}v=${t}`;
+    } catch (_e) {
+      return rawUrl;
+    }
+  };
+
+  const avatarUrlWithBust = appendCacheBuster(avatarUrl);
 
   return {
     id: user._id.toString(),
@@ -334,7 +346,7 @@ function serializeUser(user) {
     email: user.email,
     roles,
     profession: user.profession,
-    avatarUrl,
+    avatarUrl: avatarUrlWithBust,
     learningCredits: Number.isFinite(Number(user.learningCredits)) ? Number(user.learningCredits) : 10,
     isAdmin: user.isAdmin === true,
     isEmailVerified: user.isEmailVerified !== false,
@@ -629,13 +641,25 @@ function buildTeacherPublicProfile(user, cnicStatus) {
 
   const availabilityDays = Array.isArray(profile.availabilityDays) ? profile.availabilityDays : [];
   const timeSlots = Array.isArray(profile.timeSlots) ? profile.timeSlots : [];
+  function appendCacheBuster(rawUrl, timestamp) {
+    if (!rawUrl) return '';
+    try {
+      const sep = rawUrl.includes('?') ? '&' : '?';
+      const t = Number(timestamp) || Date.now();
+      return `${rawUrl}${sep}v=${t}`;
+    } catch (_e) {
+      return rawUrl;
+    }
+  }
+
+  const avatarWithBust = appendCacheBuster(profile.avatarUrl || '', user?.updatedAt?.getTime ? user.updatedAt.getTime() : Date.now());
 
   return {
     id: user._id.toString(),
     name: user.name,
     title: profile.title || 'Teacher',
     subject,
-    avatarUrl: profile.avatarUrl || '',
+    avatarUrl: avatarWithBust,
     bio: profile.bio || '',
     specialties: Array.isArray(profile.skills) ? profile.skills : [],
     availability: availabilityDays.length > 0
