@@ -1,15 +1,30 @@
-const { MailerSend, EmailParams, Sender, Recipient } = require('mailersend');
+const nodemailer = require('nodemailer');
 
-function getMailerSendClient() {
-  if (!process.env.MAILERSEND_API_KEY || !process.env.MAILERSEND_API_KEY.trim()) {
-    const error = new Error('MAILERSEND_API_KEY is missing.');
+let gmailTransporter = null;
+
+function getGmailTransporter() {
+  if (gmailTransporter) {
+    return gmailTransporter;
+  }
+
+  const gmailEmail = (process.env.GMAIL_EMAIL || '').trim();
+  const gmailAppPassword = (process.env.GMAIL_APP_PASSWORD || '').trim();
+
+  if (!gmailEmail || !gmailAppPassword) {
+    const error = new Error('GMAIL_EMAIL and GMAIL_APP_PASSWORD are required.');
     error.statusCode = 500;
     throw error;
   }
 
-  return new MailerSend({
-    apiKey: process.env.MAILERSEND_API_KEY.trim(),
+  gmailTransporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: gmailEmail,
+      pass: gmailAppPassword,
+    },
   });
+
+  return gmailTransporter;
 }
 
 function createResetCodeEmailHtml({ recipientName, code, expiresInMinutes }) {
@@ -47,57 +62,49 @@ function createEmailVerificationCodeHtml({ recipientName, code, expiresInMinutes
 }
 
 async function sendPasswordResetCodeEmail({ recipientEmail, recipientName, code, expiresInMinutes }) {
-  const fromEmail = process.env.MAILERSEND_FROM_EMAIL || 'info@domain.com';
-  const fromName = process.env.MAILERSEND_FROM_NAME || 'Verilearn';
-  const mailerSend = getMailerSendClient();
+  const gmailEmail = process.env.GMAIL_EMAIL || 'noreply@verilearn.com';
+  const fromName = process.env.GMAIL_FROM_NAME || 'Verilearn';
+  const transporter = getGmailTransporter();
 
-  const sentFrom = new Sender(fromEmail, fromName);
-  const recipients = [new Recipient(recipientEmail, recipientName || recipientEmail)];
+  const htmlContent = createResetCodeEmailHtml({
+    recipientName,
+    code,
+    expiresInMinutes,
+  });
 
-  const emailParams = new EmailParams()
-    .setFrom(sentFrom)
-    .setTo(recipients)
-    .setReplyTo(sentFrom)
-    .setSubject('Your Verilearn password reset code')
-    .setHtml(
-      createResetCodeEmailHtml({
-        recipientName,
-        code,
-        expiresInMinutes,
-      }),
-    )
-    .setText(
-      `Your Verilearn password reset code is ${code}. This code expires in ${expiresInMinutes} minutes.`,
-    );
+  const textContent = `Your Verilearn password reset code is ${code}. This code expires in ${expiresInMinutes} minutes.`;
 
-  await mailerSend.email.send(emailParams);
+  await transporter.sendMail({
+    from: `${fromName} <${gmailEmail}>`,
+    to: recipientEmail,
+    replyTo: gmailEmail,
+    subject: 'Your Verilearn password reset code',
+    html: htmlContent,
+    text: textContent,
+  });
 }
 
 async function sendEmailVerificationCodeEmail({ recipientEmail, recipientName, code, expiresInMinutes }) {
-  const fromEmail = process.env.MAILERSEND_FROM_EMAIL || 'info@domain.com';
-  const fromName = process.env.MAILERSEND_FROM_NAME || 'Verilearn';
-  const mailerSend = getMailerSendClient();
+  const gmailEmail = process.env.GMAIL_EMAIL || 'noreply@verilearn.com';
+  const fromName = process.env.GMAIL_FROM_NAME || 'Verilearn';
+  const transporter = getGmailTransporter();
 
-  const sentFrom = new Sender(fromEmail, fromName);
-  const recipients = [new Recipient(recipientEmail, recipientName || recipientEmail)];
+  const htmlContent = createEmailVerificationCodeHtml({
+    recipientName,
+    code,
+    expiresInMinutes,
+  });
 
-  const emailParams = new EmailParams()
-    .setFrom(sentFrom)
-    .setTo(recipients)
-    .setReplyTo(sentFrom)
-    .setSubject('Verify your Verilearn account')
-    .setHtml(
-      createEmailVerificationCodeHtml({
-        recipientName,
-        code,
-        expiresInMinutes,
-      }),
-    )
-    .setText(
-      `Your Verilearn email verification code is ${code}. This code expires in ${expiresInMinutes} minutes.`,
-    );
+  const textContent = `Your Verilearn email verification code is ${code}. This code expires in ${expiresInMinutes} minutes.`;
 
-  await mailerSend.email.send(emailParams);
+  await transporter.sendMail({
+    from: `${fromName} <${gmailEmail}>`,
+    to: recipientEmail,
+    replyTo: gmailEmail,
+    subject: 'Verify your Verilearn account',
+    html: htmlContent,
+    text: textContent,
+  });
 }
 
 module.exports = {
