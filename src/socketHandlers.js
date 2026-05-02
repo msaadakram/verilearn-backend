@@ -64,7 +64,7 @@ function canActAsTeacher(socket) {
  */
 function setupSocketHandlers(io) {
   io.on('connection', async (socket) => {
-    console.log(`[Socket] User ${socket.userId} (${socket.activeMode}) connected: ${socket.id}`);
+    console.log(`[Socket] User ${socket.userId} (${socket.activeMode}) connected: ${socket.id}, profession: ${socket.profession}, roles: ${JSON.stringify(socket.roles)}`);
 
     const userId = socket.userId;
     const activeMode = normalizeActiveMode(socket.activeMode, socket.profession);
@@ -329,14 +329,24 @@ function setupSocketHandlers(io) {
     socket.on('call-user', (payload) => {
       const { teacherId, studentId, callerName, callerAvatar } = payload || {};
 
+      // Debug: dump all online users so we can trace routing issues
+      console.log('[Call-Debug] === call-user event received ===');
+      console.log('[Call-Debug] Payload:', JSON.stringify(payload));
+      console.log('[Call-Debug] Caller socket:', { userId, activeMode: socket.activeMode, socketId: socket.id });
+      console.log('[Call-Debug] All online users:');
+      for (const [key, data] of onlineUsers.entries()) {
+        console.log(`  [${key}] => userId=${data.userId}, mode=${data.activeMode}, socketId=${data.socketId}, status=${data.status}`);
+      }
+
       // Role check — only student-mode sessions can initiate calls
       if (socket.activeMode !== 'student') {
-        console.warn(`[Call] Non-student-mode session ${userId} tried to initiate a call.`);
+        console.warn(`[Call] Non-student-mode session ${userId} tried to initiate a call. activeMode=${socket.activeMode}`);
         socket.emit('call-error', { message: 'Only students can initiate calls.' });
         return;
       }
 
       if (!teacherId || !studentId) {
+        console.warn('[Call] Missing teacherId or studentId in payload');
         socket.emit('call-error', { message: 'teacherId and studentId are required.' });
         return;
       }
@@ -346,9 +356,11 @@ function setupSocketHandlers(io) {
 
       // Find teacher socket(s) - first try teacher-mode, then any mode for dual-role users
       let teacherSockets = getUserSockets(teacherId, 'teacher');
+      console.log(`[Call-Debug] Teacher sockets (teacher-mode only): ${teacherSockets.length}`);
       if (teacherSockets.length === 0) {
         // Teacher might be connected in student mode (dual-role user) — search all modes
         teacherSockets = getUserSockets(teacherId);
+        console.log(`[Call-Debug] Teacher sockets (all modes fallback): ${teacherSockets.length}`);
       }
 
       if (teacherSockets.length === 0) {
@@ -363,8 +375,9 @@ function setupSocketHandlers(io) {
 
       console.log(`[Call] Student ${userId} calling teacher ${teacherId} on channel ${channel} (found ${teacherSockets.length} teacher socket(s))`);
 
-      // Send to all teacher-mode sockets (usually just one, but handle multiple for robustness)
+      // Send incoming-call to all of this teacher's sockets
       teacherSockets.forEach((teacherSocketData) => {
+        console.log(`[Call-Debug] Emitting incoming-call to socket ${teacherSocketData.socketId} (mode=${teacherSocketData.activeMode})`);
         io.to(teacherSocketData.socketId).emit('incoming-call', {
           channel,
           studentId,
