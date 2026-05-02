@@ -336,6 +336,7 @@ function serializeUser(user) {
     profession: user.profession,
     avatarUrl,
     learningCredits: Number.isFinite(Number(user.learningCredits)) ? Number(user.learningCredits) : 10,
+    isAdmin: user.isAdmin === true,
     isEmailVerified: user.isEmailVerified !== false,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
