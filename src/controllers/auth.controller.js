@@ -5,6 +5,7 @@ const Joi = require('joi');
 
 const User = require('../models/User');
 const CnicVerification = require('../models/CnicVerification');
+const Booking = require('../models/Booking');
 const { uploadProfileImageToSupabase } = require('../services/profileImageStorage.service');
 const {
   sendPasswordResetCodeEmail,
@@ -549,7 +550,7 @@ function getTeacherSessionTier(successfulSessions = 0) {
   }
 
   if (count >= TEACHER_TIER_THRESHOLDS.bronzeMax + 1) {
-    return 'Gold';
+    return 'Platinum';
   }
 
   return 'Bronze';
@@ -624,7 +625,23 @@ function computeTeacherProfileCompleted(profile) {
   );
 }
 
-function buildTeacherPublicProfile(user, cnicStatus) {
+async function getTeacherRatingStats(teacherId) {
+  const reviewBookings = await Booking.find({
+    teacherId,
+    status: 'completed',
+    'studentReview.rating': { $gte: 1, $lte: 5 },
+  }).select('studentReview.rating').lean();
+
+  const totalReviews = reviewBookings.length;
+  const ratingSum = reviewBookings.reduce((sum, booking) => sum + Number(booking.studentReview?.rating || 0), 0);
+  const averageRating = totalReviews > 0
+    ? Number((ratingSum / totalReviews).toFixed(1))
+    : 0;
+
+  return { averageRating, reviewCount: totalReviews };
+}
+
+function buildTeacherPublicProfile(user, cnicStatus, ratingStats = { averageRating: 0, reviewCount: 0 }) {
   const profile = buildTeacherProfileDefaults(user);
   const successfulSessions = getTeacherSuccessfulSessionCount(user);
   const onboarding = {
@@ -674,6 +691,8 @@ function buildTeacherPublicProfile(user, cnicStatus) {
     timezone: profile.timezone || '',
     successfulSessions,
     sessionTier: getTeacherSessionTier(successfulSessions),
+    averageRating: ratingStats.averageRating,
+    reviewCount: ratingStats.reviewCount,
     onboarding,
   };
 }
@@ -699,7 +718,9 @@ async function getQualifiedTeachersForStudent(_req, res) {
         return null;
       }
 
-      return buildTeacherPublicProfile(teacher, cnicStatus);
+      const ratingStats = await getTeacherRatingStats(teacher._id);
+
+      return buildTeacherPublicProfile(teacher, cnicStatus, ratingStats);
     }),
   );
 
@@ -736,9 +757,11 @@ async function getQualifiedTeacherDetailForStudent(req, res) {
     return res.status(404).json({ message: 'Teacher not found.' });
   }
 
+  const ratingStats = await getTeacherRatingStats(teacher._id);
+
   return res.status(200).json({
     message: 'Teacher detail fetched successfully.',
-    teacher: buildTeacherPublicProfile(teacher, cnicStatus),
+    teacher: buildTeacherPublicProfile(teacher, cnicStatus, ratingStats),
   });
 }
 
