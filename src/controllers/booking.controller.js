@@ -301,11 +301,48 @@ async function getMyBookings(req, res) {
     };
     if (status) filter.status = status;
 
-    const bookings = await Booking.find(filter)
+    let bookings = await Booking.find(filter)
         .sort({ createdAt: -1 })
         .populate('teacherId', 'name email avatarUrl')
         .populate('studentId', 'name email avatarUrl')
         .lean();
+
+    /* ── Lazy Expiration for Pending Bookings ── */
+    const nowTime = Date.now();
+    let hasModifications = false;
+
+    bookings = await Promise.all(bookings.map(async (booking) => {
+        if (!booking.scheduledAt) return booking;
+        const bStart = booking.scheduledAt.getTime();
+
+        if (booking.status === 'pending') {
+            const bEnd = bStart + (booking.sessionDuration || 30) * 60 * 1000;
+            if (nowTime > bEnd) {
+                // Booking has expired without being accepted, auto-cancel it
+                await Booking.updateOne({ _id: booking._id }, { $set: { status: 'cancelled' } });
+                hasModifications = true;
+                return { ...booking, status: 'cancelled' };
+            }
+        }
+        else if (booking.status === 'accepted') {
+            // If accepted but nobody joined within 30 minutes after start time → no-show
+            const noShowWindowMs = 30 * 60 * 1000;
+            if (nowTime > bStart + noShowWindowMs && !booking.studentJoined && !booking.teacherJoined) {
+                await Booking.updateOne({ _id: booking._id }, { $set: { status: 'no_show' } });
+                hasModifications = true;
+                return { ...booking, status: 'no_show' };
+            }
+            // If only the window passed but not 30 min, still cancel accepted-no-join after session end time
+            const bEnd = bStart + (booking.sessionDuration || 30) * 60 * 1000;
+            if (nowTime > bEnd && !booking.studentJoined && !booking.teacherJoined) {
+                await Booking.updateOne({ _id: booking._id }, { $set: { status: 'no_show' } });
+                hasModifications = true;
+                return { ...booking, status: 'no_show' };
+            }
+        }
+
+        return booking;
+    }));
 
     return res.json({ bookings });
 }
@@ -428,9 +465,13 @@ async function getSessionStatus(req, res) {
     const remainingMs = scheduledAt ? Math.max(0, scheduledAt.getTime() - now.getTime()) : 0;
     const canJoin = scheduledAt ? now.getTime() >= scheduledAt.getTime() - 5 * 60 * 1000 : false; // 5 min early
 
+    const sessionDurationMs = (booking.sessionDuration || 30) * 60 * 1000;
     let liveDurationSeconds = 0;
+    let remainingSessionSeconds = null;
     if (booking.startTime && booking.status === 'ongoing') {
-        liveDurationSeconds = Math.floor((now.getTime() - new Date(booking.startTime).getTime()) / 1000);
+        const elapsed = now.getTime() - new Date(booking.startTime).getTime();
+        liveDurationSeconds = Math.floor(elapsed / 1000);
+        remainingSessionSeconds = Math.max(0, Math.floor((sessionDurationMs - elapsed) / 1000));
     }
 
     return res.json({
@@ -445,6 +486,8 @@ async function getSessionStatus(req, res) {
             liveDurationSeconds,
             creditsUsed: booking.creditsUsed,
             actualDuration: booking.actualDuration,
+            sessionDuration: booking.sessionDuration || 30,
+            remainingSessionSeconds,
         },
     });
 }
@@ -528,7 +571,18 @@ async function endSession(req, res) {
     }
 
     const now = new Date();
-    booking.endTime = now;
+
+    // Cap the endTime to startTime + sessionDuration so we never charge beyond booked time
+    const maxSessionMs = (booking.sessionDuration || 30) * 60 * 1000;
+    let effectiveEndTime = now;
+    if (booking.startTime) {
+        const maxEndTime = new Date(new Date(booking.startTime).getTime() + maxSessionMs);
+        if (now > maxEndTime) {
+            effectiveEndTime = maxEndTime;
+        }
+    }
+
+    booking.endTime = effectiveEndTime;
     booking.status = 'completed';
 
     /* ── Calculate credits only if session actually started (both joined) ── */
@@ -540,7 +594,7 @@ async function endSession(req, res) {
         const teacher = await User.findById(booking.teacherId).select('teacherProfile.creditRate').lean();
         const creditCalculation = calculateSessionCredits({
             startTime: booking.startTime,
-            endTime: now,
+            endTime: effectiveEndTime,
             creditRate: teacher?.teacherProfile?.creditRate || 30,
         });
 

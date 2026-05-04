@@ -25,7 +25,10 @@ function calculateSessionCredits({ startTime, endTime, creditRate = 30 }) {
     const actualDurationMinutes = durationMs / 60000;
     const roundedDurationMinutes = Math.round(actualDurationMinutes);
     const safeRate = Number.isFinite(Number(creditRate)) && Number(creditRate) > 0 ? Number(creditRate) : 30;
-    const creditsUsed = Math.max(1, Math.ceil(actualDurationMinutes / safeRate));
+
+    // Allows 1 credit for every (safeRate - 5) minutes, so 25+ mins yields 1 credit, 50+ mins yields 2 credits.
+    const effectiveBlock = Math.max(1, safeRate - 5);
+    const creditsUsed = Math.floor(actualDurationMinutes / effectiveBlock);
 
     return {
         actualDurationMinutes,

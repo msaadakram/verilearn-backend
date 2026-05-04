@@ -9,6 +9,7 @@ const { calculateSessionCredits } = require('./utils/sessionCredits');
 // Key format: "userId:activeMode" to handle multiple connections per user in different modes
 const onlineUsers = new Map(); // "userId:activeMode" -> { userId, activeMode, socketId, status, lastSeen }
 const typingUsers = new Map(); // conversationId -> Set of userIds
+const sessionAutoEndTimers = new Map(); // bookingId -> timerId (server-side auto-end after sessionDuration)
 
 /**
  * Create a map key for tracking user sockets by userId and activeMode
@@ -549,6 +550,7 @@ function setupSocketHandlers(io) {
             bookingId,
             startTime: booking.startTime.toISOString(),
             channelName: booking.channelName,
+            sessionDuration: booking.sessionDuration || 30,
           };
 
           // Emit to both participants
@@ -560,6 +562,102 @@ function setupSocketHandlers(io) {
           }
 
           console.log(`[Session] Session ${bookingId} started — both participants joined.`);
+
+          // Schedule server-side auto-end after sessionDuration
+          const durationMs = (booking.sessionDuration || 30) * 60 * 1000;
+          if (sessionAutoEndTimers.has(bookingId)) {
+            clearTimeout(sessionAutoEndTimers.get(bookingId));
+          }
+          const autoEndTimer = setTimeout(async () => {
+            sessionAutoEndTimers.delete(bookingId);
+            try {
+              const b = await Booking.findById(bookingId);
+              if (!b || b.status !== 'ongoing') return;
+
+              const endTime = new Date();
+              const maxEnd = new Date(b.startTime.getTime() + (b.sessionDuration || 30) * 60 * 1000);
+              const effectiveEnd = endTime > maxEnd ? maxEnd : endTime;
+              b.endTime = effectiveEnd;
+              b.status = 'completed';
+
+              let creditsUsed = 0;
+              let actualDurationMinutes = 0;
+              if (b.startTime) {
+                const teacher = await User.findById(b.teacherId).select('teacherProfile.creditRate').lean();
+                const creditCalc = calculateSessionCredits({
+                  startTime: b.startTime,
+                  endTime: effectiveEnd,
+                  creditRate: teacher?.teacherProfile?.creditRate || 30,
+                });
+                actualDurationMinutes = creditCalc.actualDurationMinutes;
+                b.actualDuration = creditCalc.roundedDurationMinutes;
+                creditsUsed = creditCalc.creditsUsed;
+                b.creditsUsed = creditsUsed;
+
+                const studentUpdate = await User.findOneAndUpdate(
+                  { _id: b.studentId, learningCredits: { $gte: creditsUsed } },
+                  { $inc: { learningCredits: -creditsUsed } },
+                  { new: true },
+                );
+                if (studentUpdate) {
+                  await User.findByIdAndUpdate(b.teacherId, { $inc: { learningCredits: creditsUsed } });
+                } else {
+                  const student = await User.findById(b.studentId);
+                  if (student && student.learningCredits > 0) {
+                    creditsUsed = student.learningCredits;
+                    b.creditsUsed = creditsUsed;
+                    await User.findByIdAndUpdate(b.studentId, { learningCredits: 0 });
+                    await User.findByIdAndUpdate(b.teacherId, { $inc: { learningCredits: creditsUsed } });
+                  } else {
+                    creditsUsed = 0;
+                    b.creditsUsed = 0;
+                  }
+                }
+                await User.findByIdAndUpdate(b.teacherId, { $inc: { 'teacherProfile.successfulSessionCount': 1 } });
+              } else {
+                b.actualDuration = 0;
+                b.creditsUsed = 0;
+              }
+
+              await b.save();
+
+              const [sFinal, tFinal] = await Promise.all([
+                User.findById(b.studentId, 'learningCredits').lean(),
+                User.findById(b.teacherId, 'learningCredits').lean(),
+              ]);
+              const tStats = await User.findById(b.teacherId, 'teacherProfile.successfulSessionCount').lean();
+              const successfulSessions = Number(tStats?.teacherProfile?.successfulSessionCount) || 0;
+
+              const autoEndPayload = {
+                bookingId,
+                creditsUsed,
+                actualDurationMinutes: Math.round(actualDurationMinutes),
+                studentCreditsRemaining: sFinal?.learningCredits ?? 0,
+                teacherCreditsTotal: tFinal?.learningCredits ?? 0,
+                teacherSessionStats: {
+                  successfulSessions,
+                  tier: successfulSessions >= 30 ? 'Diamond' : successfulSessions >= 10 ? 'Gold' : 'Bronze',
+                },
+                endedBy: 'system',
+                reason: 'Session duration expired',
+              };
+
+              // Emit to both participants
+              const sId = String(b.studentId);
+              const tId = String(b.teacherId);
+              [sId, tId].forEach((pId) => {
+                getUserSockets(pId).forEach((s) => {
+                  io.to(s.socketId).emit('session-completed', autoEndPayload);
+                  io.to(s.socketId).emit('call-ended', { channel: b.channelName, endedBy: 'system' });
+                });
+              });
+
+              console.log(`[Session] Auto-ended session ${bookingId} after ${b.sessionDuration || 30} min.`);
+            } catch (err) {
+              console.error(`[Session] Auto-end error for ${bookingId}:`, err);
+            }
+          }, durationMs);
+          sessionAutoEndTimers.set(bookingId, autoEndTimer);
         } else {
           await booking.save();
           socket.emit('session-waiting', {
@@ -606,6 +704,12 @@ function setupSocketHandlers(io) {
         if (booking.status === 'completed') {
           console.log(`[Session] Session ${bookingId} was already completed; ignoring duplicate end request.`);
           return;
+        }
+
+        // Clear any pending auto-end timer for this booking
+        if (sessionAutoEndTimers.has(bookingId)) {
+          clearTimeout(sessionAutoEndTimers.get(bookingId));
+          sessionAutoEndTimers.delete(bookingId);
         }
 
         const now = new Date();
